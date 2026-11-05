@@ -1,5 +1,6 @@
 """Flask application exposing the PokéAPI features as a small JSON REST API."""
 
+import asyncio
 import logging
 
 from flask import Flask, jsonify, request
@@ -13,6 +14,12 @@ from pokemon.services import (
     get_pokemon_summary,
     get_type_statistics,
 )
+from scripts.q1_error_handling_demo import run_simulated_scenarios
+from scripts.q2_load_simulation import in_process_load_test
+
+# Upper bounds for the on-demand load test, to keep the dev server responsive.
+MAX_LOAD_TOTAL = 50_000
+MAX_LOAD_CONCURRENCY = 500
 
 app = Flask(__name__)
 app.json.sort_keys = False  # keep a readable, logical key order in responses
@@ -37,6 +44,9 @@ def index():
             "/type/<type_name>",
             "/battle/<first>/<second>?seed=<int>",
             "/cache/stats",
+            "POST /cache/clear",
+            "/demo/resilience",
+            "/demo/load?total=<int>&concurrency=<int>&cache=<0|1>",
         ]
     )
 
@@ -72,6 +82,30 @@ def battle(first: str, second: str):
 def cache_stats():
     """Expose cache metrics (hits, misses, hit rate) to monitor its efficiency."""
     return jsonify(pokeapi_cache.stats())
+
+
+@app.post("/cache/clear")
+def cache_clear():
+    """Empty the cache (useful to demonstrate a cold vs warm cache)."""
+    pokeapi_cache.clear()
+    return jsonify(pokeapi_cache.stats())
+
+
+@app.get("/demo/resilience")
+def demo_resilience():
+    """Q1: replay simulated failures (429, 5xx, timeouts, 401, 404) through the retry layer."""
+    return jsonify(scenarios=run_simulated_scenarios(backoff_factor=0.1))
+
+
+@app.get("/demo/load")
+def demo_load():
+    """Q2/Q3: run a bounded load test against an in-process mock of api.example.com/data1..3."""
+    total = min(request.args.get("total", 5_000, type=int), MAX_LOAD_TOTAL)
+    concurrency = min(request.args.get("concurrency", 200, type=int), MAX_LOAD_CONCURRENCY)
+    use_cache = request.args.get("cache", "0") == "1"
+    if total <= 0 or concurrency <= 0:
+        return jsonify(error="total and concurrency must be positive"), 400
+    return jsonify(asyncio.run(in_process_load_test(total, concurrency, use_cache)))
 
 
 if __name__ == "__main__":

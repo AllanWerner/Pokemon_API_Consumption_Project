@@ -8,6 +8,7 @@ Run from the project root:  python -m scripts.q1_error_handling_demo
 
 import logging
 import sys
+import time
 from unittest.mock import MagicMock
 
 import requests
@@ -15,9 +16,6 @@ import requests
 from pokemon import api_client
 from pokemon.errors import ApiError
 from pokemon.resilient_http import resilient_get
-
-# Logs go to stdout so they interleave correctly with the printed results.
-logging.basicConfig(level=logging.INFO, format="    %(levelname)s: %(message)s", stream=sys.stdout)
 
 URL = "https://pokeapi.co/api/v2/pokemon/pikachu"
 
@@ -46,7 +44,50 @@ def run(title, func):
         print(f"    FAILED: [{exc.__class__.__name__}, status {exc.status_code}] {exc}")
 
 
+# Simulated scenarios: (title, sequence of server outcomes). Reused by the Flask /demo route.
+SIMULATED_SCENARIOS = [
+    ("500 then 503, then success", [500, 503, 200]),
+    ("429 with Retry-After: 1, then success", [(429, {"Retry-After": "1"}), 200]),
+    ("Timeout then connection error, then success", [requests.Timeout(), requests.ConnectionError(), 200]),
+    ("503 persists (1 attempt + 3 retries)", [503] * 4),
+    ("401 Unauthorized (not retried)", [401]),
+    ("404 Not Found (not retried)", [404]),
+]
+
+
+def run_simulated_scenarios(backoff_factor: float = 0.2) -> list[dict]:
+    """Run every simulated scenario and return a structured report (attempts, pauses, outcome)."""
+    report = []
+    for title, outcomes in SIMULATED_SCENARIOS:
+        session = scripted_session(*outcomes)
+        pauses = []
+
+        def recording_sleep(seconds: float) -> None:
+            # Really pause (the demo shows actual waiting) while recording each delay.
+            pauses.append(round(seconds, 2))
+            time.sleep(seconds)
+
+        try:
+            resilient_get(URL, session=session, backoff_factor=backoff_factor, sleep=recording_sleep)
+            outcome, status = "success", 200
+        except ApiError as exc:
+            outcome, status = exc.__class__.__name__, exc.status_code
+        report.append(
+            {
+                "scenario": title,
+                "attempts": session.get.call_count,
+                "pauses_s": pauses,
+                "outcome": outcome,
+                "final_status": status,
+            }
+        )
+    return report
+
+
 def main():
+    # Logs go to stdout so they interleave correctly with the printed results.
+    logging.basicConfig(level=logging.INFO, format="    %(levelname)s: %(message)s", stream=sys.stdout)
+
     # Small backoff factor so the demo runs in a few seconds while still really pausing.
     fast = {"backoff_factor": 0.2}
 

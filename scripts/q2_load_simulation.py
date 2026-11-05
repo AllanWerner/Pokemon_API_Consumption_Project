@@ -27,10 +27,12 @@ import time
 from urllib.parse import urlparse
 
 import requests
+from aiohttp import web
 
 from pokemon.async_http import AsyncResilientClient
+from pokemon.cache import TTLCache
 from pokemon.resilient_http import resilient_get
-from scripts.mock_api_server import serve
+from scripts.mock_api_server import build_app, serve
 
 ROUTES = [
     "https://api.example.com/data1",
@@ -110,6 +112,52 @@ async def run_high_load(total: int, concurrency: int) -> None:
     print(f"    HTTP calls sent : {stats['requests']:,} (including {stats['retries']:,} retries)")
     print(f"    Succeeded       : {stats['success']:,} ({stats['success'] / total:.4%})")
     print(f"    Failed          : {sum(failed.values()):,} {failed or ''}")
+
+
+async def in_process_load_test(
+    total: int, concurrency: int, use_cache: bool = False
+) -> dict:
+    """Lighter load test for the web front end: mock backend and client share one event loop.
+
+    Throughput is lower than with separate backend processes (one CPU does both sides),
+    but no extra process has to be started from the Flask server.
+    """
+    # access_log=None: logging every request would dominate the measured time.
+    runner = web.AppRunner(build_app(), access_log=None)
+    await runner.setup()
+    with socket.socket() as probe:  # find a free local port
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    await web.TCPSite(runner, "127.0.0.1", port).start()
+
+    try:
+        urls = (
+            f"http://127.0.0.1:{port}{urlparse(u).path}"
+            for u in itertools.islice(itertools.cycle(ROUTES), total)
+        )
+        cache = TTLCache() if use_cache else None
+        start = time.perf_counter()
+        async with AsyncResilientClient(
+            concurrency=concurrency, backoff_factor=0.1, cache=cache, coalesce=use_cache
+        ) as client:
+            stats = await client.run_bulk(urls)
+        elapsed = time.perf_counter() - start
+    finally:
+        await runner.cleanup()
+
+    failed = sum(v for k, v in stats.items() if k.startswith("failed_"))
+    return {
+        "total": total,
+        "concurrency": concurrency,
+        "cache": use_cache,
+        "duration_s": round(elapsed, 3),
+        "throughput_rps": round(total / elapsed),
+        "http_calls": stats["requests"],
+        "retries": stats["retries"],
+        "cache_hits": stats["cache_hits"],
+        "succeeded": stats["success"],
+        "failed": failed,
+    }
 
 
 def main() -> None:
