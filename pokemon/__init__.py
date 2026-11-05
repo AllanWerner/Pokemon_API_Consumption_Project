@@ -1,0 +1,1 @@
+"""PokéAPI consumption package."""
