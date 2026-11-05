@@ -1,14 +1,17 @@
 """Low-level HTTP access to the PokéAPI."""
 
+import asyncio
 import re
 
 import requests
 
+from pokemon.async_http import AsyncResilientClient
 from pokemon.errors import InvalidIdentifierError
 from pokemon.resilient_http import resilient_get
 
 BASE_URL = "https://pokeapi.co/api/v2"
 DEFAULT_TIMEOUT = 10  # seconds
+POKEAPI_CONCURRENCY = 20  # simultaneous requests allowed towards PokéAPI
 
 # A shared session reuses TCP connections across calls (faster than one-off requests).
 _session = requests.Session()
@@ -37,6 +40,23 @@ def normalize_identifier(identifier: str | int) -> str:
 def get_pokemon(identifier: str | int) -> dict:
     """Fetch raw data for a Pokémon by name or ID."""
     return fetch_json(f"{BASE_URL}/pokemon/{normalize_identifier(identifier)}")
+
+
+def get_many_pokemon(identifiers: list[str | int]) -> list[dict]:
+    """Fetch several Pokémon concurrently (Q2 async client) instead of one by one."""
+    urls = [f"{BASE_URL}/pokemon/{normalize_identifier(i)}" for i in identifiers]
+
+    async def _fetch() -> list:
+        # Moderate concurrency: PokéAPI is a free public service with a fair-use policy.
+        async with AsyncResilientClient(concurrency=POKEAPI_CONCURRENCY, timeout=DEFAULT_TIMEOUT) as client:
+            return await client.get_many(urls)
+
+    results = asyncio.run(_fetch())
+    # Surface the first failure, consistent with the single-call behaviour.
+    for result in results:
+        if isinstance(result, Exception):
+            raise result
+    return results
 
 
 def get_type_list() -> dict:

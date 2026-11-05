@@ -81,8 +81,8 @@ def get_type_statistics(type_name: str) -> dict:
     type_data = api_client.get_type(type_name)
     names = [entry["pokemon"]["name"] for entry in type_data["pokemon"]]
 
-    # One request per Pokémon: this is the costly part (optimised later with async + cache).
-    pokemons = [api_client.get_pokemon(name) for name in names]
+    # One request per Pokémon, sent concurrently (async client) to keep the response time low.
+    pokemons = api_client.get_many_pokemon(names)
 
     result = {"type": type_data["name"], "count": len(names)}
     if not pokemons:

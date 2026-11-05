@@ -38,20 +38,52 @@ CLIENT_ERRORS = {
 }
 
 
-def _compute_delay(attempt: int, backoff_factor: float, max_delay: float) -> float:
+def compute_delay(attempt: int, backoff_factor: float, max_delay: float) -> float:
     """Exponential backoff with jitter: ~factor * 2^attempt, capped at max_delay."""
     delay = backoff_factor * (2**attempt)
     # Random jitter avoids many clients retrying at exactly the same moment.
     return min(delay + random.uniform(0, backoff_factor), max_delay)
 
 
-def _retry_after_seconds(response: requests.Response) -> float | None:
+def _retry_after_seconds(headers) -> float | None:
     """Read the Retry-After header (in seconds) when the server provides it."""
-    value = response.headers.get("Retry-After")
+    value = headers.get("Retry-After")
     try:
         return float(value) if value is not None else None
     except ValueError:
         return None  # HTTP-date format is not handled: fall back to backoff
+
+
+def classify_error_status(
+    status: int, headers, url: str, attempt: int, backoff_factor: float, max_delay: float
+) -> tuple[ApiError, float]:
+    """Decide what to do with an HTTP error status (shared by the sync and async clients).
+
+    Raises immediately for non-retryable statuses; otherwise returns the error to
+    report if retries run out, and the delay to wait before the next attempt.
+    """
+    if status in CLIENT_ERRORS:
+        exc_class, message = CLIENT_ERRORS[status]
+        logger.warning("%s -> HTTP %s, not retried", url, status)
+        raise exc_class(f"{message} ({url})", url=url)
+
+    if status == 429:
+        # Honour the server's indication when present.
+        retry_after = _retry_after_seconds(headers)
+        delay = (
+            min(retry_after, max_delay)
+            if retry_after is not None
+            else compute_delay(attempt, backoff_factor, max_delay)
+        )
+        return RateLimitError(f"Too many requests ({url})", url=url), delay
+
+    if status in RETRYABLE_STATUSES:
+        return ServerError(f"Server error {status} ({url})", url=url), compute_delay(
+            attempt, backoff_factor, max_delay
+        )
+
+    # Any other unexpected status (e.g. 418, 501): fail without retrying.
+    raise ApiError(f"Unexpected HTTP status {status} ({url})", status_code=status, url=url)
 
 
 def resilient_get(
@@ -80,7 +112,7 @@ def resilient_get(
             response = http.get(url, params=params, headers=headers, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as exc:
             last_error = NetworkError(f"Network failure: {exc.__class__.__name__}", url=url)
-            delay = _compute_delay(attempt, backoff_factor, max_delay)
+            delay = compute_delay(attempt, backoff_factor, max_delay)
         else:
             status = response.status_code
 
@@ -90,26 +122,9 @@ def resilient_get(
                 except ValueError as exc:
                     raise ApiError("Response body is not valid JSON", url=url) from exc
 
-            if status in CLIENT_ERRORS:
-                exc_class, message = CLIENT_ERRORS[status]
-                logger.warning("%s -> HTTP %s, not retried", url, status)
-                raise exc_class(f"{message} ({url})", url=url)
-
-            if status == 429:
-                last_error = RateLimitError(f"Too many requests ({url})", url=url)
-                # Honour the server's indication when present.
-                retry_after = _retry_after_seconds(response)
-                delay = (
-                    min(retry_after, max_delay)
-                    if retry_after is not None
-                    else _compute_delay(attempt, backoff_factor, max_delay)
-                )
-            elif status in RETRYABLE_STATUSES:
-                last_error = ServerError(f"Server error {status} ({url})", url=url)
-                delay = _compute_delay(attempt, backoff_factor, max_delay)
-            else:
-                # Any other unexpected status (e.g. 418, 501): fail without retrying.
-                raise ApiError(f"Unexpected HTTP status {status} ({url})", status_code=status, url=url)
+            last_error, delay = classify_error_status(
+                status, response.headers, url, attempt, backoff_factor, max_delay
+            )
 
         if attempt < max_retries:
             logger.warning("%s -> retry %d/%d in %.2fs", last_error, attempt + 1, max_retries, delay)
