@@ -2,6 +2,7 @@
 
 import logging
 
+from pokemon.battle import simulate_battle
 from pokemon.errors import ApiError
 from pokemon.services import (
     STAT_LABELS,
@@ -60,10 +61,48 @@ def display_type_statistics() -> None:
     print(f"  Pure / dual type: {stats['pure_type_count']} / {stats['dual_type_count']}")
 
 
+# Readable effectiveness hints, as displayed in the games.
+EFFECTIVENESS_HINTS = {
+    0: " (no effect)",
+    0.25: " (barely effective)",
+    0.5: " (not very effective)",
+    2: " (super effective!)",
+    4: " (extremely effective!)",
+}
+
+
+def battle_two_pokemon() -> None:
+    """Ask for two Pokémon (and an optional seed) and print the fight turn by turn."""
+    first = input("First Pokémon: ")
+    second = input("Second Pokémon: ")
+    seed_text = input("Seed to replay a fight (leave empty for random): ").strip()
+    result = simulate_battle(first, second, seed=int(seed_text) if seed_text.isdigit() else None)
+
+    a, b = result["fighters"]
+    print(f"\n{a['label']} ({a['max_hp']} HP)  VS  {b['label']} ({b['max_hp']} HP)   [seed {result['seed']}]")
+    for turn in result["turns"]:
+        print(f"\n-- Turn {turn['turn']}")
+        for act in turn["actions"]:
+            hint = EFFECTIVENESS_HINTS.get(act["effectiveness"], "")
+            print(
+                f"   {act['attacker']} -> {act['move_type']} {act['category']} attack: "
+                f"{act['damage']} dmg{hint} | {act['defender']} HP left: {act['defender_hp']}"
+            )
+
+    print(f"\nTotal damage: {a['label']} {a['total_damage']} | {b['label']} {b['total_damage']}")
+    if result["reason"] == "ko":
+        print(f"{result['ko']} is KO after {result['turns_played']} turn(s)! Winner: {result['winner']}")
+    elif result["reason"] == "damage":
+        print(f"No KO after 5 turns. Winner on total damage: {result['winner']}")
+    else:
+        print("Perfect tie!")
+
+
 MENU = {
     "1": ("Show a Pokémon's stats", display_pokemon_stats),
     "2": ("Compare two Pokémon", compare_two_pokemon),
     "3": ("Statistics for a type", display_type_statistics),
+    "4": ("Battle simulation", battle_two_pokemon),
 }
 
 

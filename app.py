@@ -2,9 +2,10 @@
 
 import logging
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from pokemon.api_client import pokeapi_cache
+from pokemon.battle import simulate_battle
 from pokemon.errors import ApiError
 from pokemon.services import (
     compare_pokemon,
@@ -34,6 +35,7 @@ def index():
             "/compare/<first>/<second>",
             "/types",
             "/type/<type_name>",
+            "/battle/<first>/<second>?seed=<int>",
             "/cache/stats",
         ]
     )
@@ -57,6 +59,13 @@ def list_types():
 @app.get("/type/<type_name>")
 def type_statistics(type_name: str):
     return jsonify(get_type_statistics(type_name))
+
+
+@app.get("/battle/<first>/<second>")
+def battle(first: str, second: str):
+    # Optional ?seed=... replays exactly the same fight.
+    seed = request.args.get("seed", type=int)
+    return jsonify(simulate_battle(first, second, seed=seed))
 
 
 @app.get("/cache/stats")

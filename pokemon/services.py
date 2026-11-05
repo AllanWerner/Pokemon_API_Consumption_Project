@@ -32,6 +32,9 @@ def get_pokemon_summary(identifier: str | int) -> dict:
         "types": [t["type"]["name"] for t in raw["types"]],
         "height": raw["height"] / 10,  # decimetres -> metres
         "weight": raw["weight"] / 10,  # hectograms -> kilograms
+        # Official artwork when available, small default sprite otherwise.
+        "sprite": raw["sprites"]["other"]["official-artwork"]["front_default"]
+        or raw["sprites"]["front_default"],
         "stats": extract_stats(raw),
     }
 
