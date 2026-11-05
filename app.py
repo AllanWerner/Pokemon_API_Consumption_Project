@@ -1,8 +1,10 @@
 """Flask application exposing the PokéAPI features as a small JSON REST API."""
 
-import requests
+import logging
+
 from flask import Flask, jsonify
 
+from pokemon.errors import ApiError
 from pokemon.services import (
     compare_pokemon,
     get_all_types,
@@ -14,11 +16,13 @@ app = Flask(__name__)
 app.json.sort_keys = False  # keep a readable, logical key order in responses
 
 
-@app.errorhandler(requests.HTTPError)
-def handle_upstream_error(exc: requests.HTTPError):
-    """Forward PokéAPI errors (e.g. 404 unknown Pokémon) with a clean JSON message."""
-    status = exc.response.status_code if exc.response is not None else 502
-    return jsonify(error=f"PokéAPI request failed: {exc}"), status
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+
+@app.errorhandler(ApiError)
+def handle_api_error(exc: ApiError):
+    """Translate API-layer exceptions into a clean JSON error with the matching status code."""
+    return jsonify(error=str(exc), type=exc.__class__.__name__), exc.status_code
 
 
 @app.get("/")

@@ -1,7 +1,8 @@
 """Interactive command-line interface: asks the user for input and prints readable results."""
 
-import requests
+import logging
 
+from pokemon.errors import ApiError
 from pokemon.services import (
     STAT_LABELS,
     compare_pokemon,
@@ -82,10 +83,12 @@ def main() -> None:
 
         try:
             MENU[choice][1]()
-        except requests.HTTPError as exc:
-            # Most common case: unknown Pokémon/type -> 404.
-            print(f"API error: {exc}")
+        except ApiError as exc:
+            # Errors are already classified by the HTTP layer (404, 429, 5xx, invalid input...).
+            print(f"[{exc.__class__.__name__}] {exc}")
 
 
 if __name__ == "__main__":
+    # Show retry warnings in the console so the user knows why a call takes longer.
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     main()
