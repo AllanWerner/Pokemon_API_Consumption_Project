@@ -5,6 +5,7 @@ Target routes (from the brief):
 
 Each route is served by its own local mock backend process (see mock_api_server.py),
 with random latency and 429/500/503 errors, so retries are exercised for real.
+Request coalescing (Q3) is disabled here so that every request really hits the backends.
 
 Steps:
     1. Baseline: N requests sent one by one with the synchronous Q1 client
@@ -81,7 +82,7 @@ def run_sequential(n: int) -> float:
 
 async def run_async(n: int, concurrency: int) -> float:
     start = time.perf_counter()
-    async with AsyncResilientClient(concurrency=concurrency, backoff_factor=0.1) as client:
+    async with AsyncResilientClient(concurrency=concurrency, backoff_factor=0.1, coalesce=False) as client:
         await client.get_many(url_stream(n))
     return time.perf_counter() - start
 
@@ -99,7 +100,7 @@ async def run_high_load(total: int, concurrency: int) -> None:
             elapsed = time.perf_counter() - start
             print(f"    {done:>10,} / {total:,}  ({done / elapsed:,.0f} req/s)")
 
-    async with AsyncResilientClient(concurrency=concurrency, backoff_factor=0.1) as client:
+    async with AsyncResilientClient(concurrency=concurrency, backoff_factor=0.1, coalesce=False) as client:
         stats = await client.run_bulk(url_stream(total), on_result=progress)
 
     elapsed = time.perf_counter() - start

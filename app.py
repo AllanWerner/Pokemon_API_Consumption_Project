@@ -4,6 +4,7 @@ import logging
 
 from flask import Flask, jsonify
 
+from pokemon.api_client import pokeapi_cache
 from pokemon.errors import ApiError
 from pokemon.services import (
     compare_pokemon,
@@ -33,6 +34,7 @@ def index():
             "/compare/<first>/<second>",
             "/types",
             "/type/<type_name>",
+            "/cache/stats",
         ]
     )
 
@@ -55,6 +57,12 @@ def list_types():
 @app.get("/type/<type_name>")
 def type_statistics(type_name: str):
     return jsonify(get_type_statistics(type_name))
+
+
+@app.get("/cache/stats")
+def cache_stats():
+    """Expose cache metrics (hits, misses, hit rate) to monitor its efficiency."""
+    return jsonify(pokeapi_cache.stats())
 
 
 if __name__ == "__main__":

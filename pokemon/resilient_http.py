@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 import requests
 
+from pokemon.cache import TTLCache
 from pokemon.errors import (
     ApiError,
     BadRequestError,
@@ -97,13 +98,22 @@ def resilient_get(
     backoff_factor: float = 0.5,
     max_delay: float = 30,
     sleep: Callable[[float], None] = time.sleep,
+    cache: TTLCache | None = None,
 ) -> dict:
     """GET `url` and return its JSON body, retrying on transient failures.
 
     `max_retries` is the number of extra attempts after the first one.
     `sleep` is injectable so tests and demos can run without real waiting.
+    `cache` (Q3): when given, a fresh cached response is returned without any HTTP call.
     Raises an `ApiError` subclass describing the failure.
     """
+    # Cache key includes query parameters so different queries are not mixed up.
+    cache_key = requests.Request("GET", url, params=params).prepare().url
+    if cache is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     http = session or requests
     last_error: ApiError | None = None
 
@@ -118,9 +128,13 @@ def resilient_get(
 
             if status < 400:
                 try:
-                    return response.json()
+                    data = response.json()
                 except ValueError as exc:
                     raise ApiError("Response body is not valid JSON", url=url) from exc
+                # Only successful responses are cached.
+                if cache is not None:
+                    cache.set(cache_key, data)
+                return data
 
             last_error, delay = classify_error_status(
                 status, response.headers, url, attempt, backoff_factor, max_delay

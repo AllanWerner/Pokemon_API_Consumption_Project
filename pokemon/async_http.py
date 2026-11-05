@@ -9,6 +9,11 @@ Why it scales:
 - `run_bulk` uses a fixed pool of workers fed by a bounded queue: memory stays
   constant whether you send 1 000 or 10 000 000 requests (URLs are consumed lazily).
 - Same retry policy as Q1 (shared `classify_error_status`), with non-blocking pauses.
+
+Q3 additions:
+- Optional TTL cache: a cached URL is served from memory without any network call.
+- Request coalescing: identical requests in flight at the same time share a single
+  HTTP call (avoids a "thundering herd" when the cache is empty or just expired).
 """
 
 import asyncio
@@ -18,6 +23,7 @@ from collections.abc import Awaitable, Callable, Iterable
 
 import aiohttp
 
+from pokemon.cache import TTLCache
 from pokemon.errors import ApiError, NetworkError
 from pokemon.resilient_http import classify_error_status, compute_delay
 
@@ -42,7 +48,13 @@ class AsyncResilientClient:
         max_retries: int = 3,
         backoff_factor: float = 0.5,
         max_delay: float = 30,
+        cache: TTLCache | None = None,
+        coalesce: bool = True,
     ):
+        self.cache = cache
+        self.coalesce = coalesce
+        # url -> pending task, used to merge identical concurrent requests.
+        self._in_flight: dict[str, asyncio.Task] = {}
         self.concurrency = concurrency
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
@@ -62,6 +74,38 @@ class AsyncResilientClient:
         await self._session.close()
 
     async def get_json(self, url: str) -> dict:
+        """Return the JSON body of `url`, from the cache when possible, otherwise via HTTP."""
+        if self.cache is not None:
+            cached = self.cache.get(url)
+            if cached is not None:
+                self.stats["cache_hits"] += 1
+                return cached
+
+        if not self.coalesce:
+            data = await self._fetch_with_retries(url)
+            if self.cache is not None:
+                self.cache.set(url, data)
+            return data
+
+        # Another coroutine is already fetching this URL: wait for its result instead.
+        task = self._in_flight.get(url)
+        if task is not None:
+            self.stats["coalesced"] += 1
+            return await asyncio.shield(task)
+
+        task = asyncio.create_task(self._fetch_with_retries(url))
+        self._in_flight[url] = task
+        try:
+            data = await asyncio.shield(task)
+        finally:
+            self._in_flight.pop(url, None)
+
+        # Only successful responses are cached: errors must be retried on the next call.
+        if self.cache is not None:
+            self.cache.set(url, data)
+        return data
+
+    async def _fetch_with_retries(self, url: str) -> dict:
         """GET `url` and return its JSON body, retrying transient failures (429, 5xx, network)."""
         last_error: ApiError | None = None
 
